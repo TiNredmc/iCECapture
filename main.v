@@ -314,9 +314,9 @@ always@(posedge CAP_CLK)begin
 					
 				endcase
 			
-			end // cmd decoder if 
+			end //if (cmd_byte_n == cmd_max) cmd decoder.
 		
-		end
+		end// if(rxready)
 	
 	end
 	
