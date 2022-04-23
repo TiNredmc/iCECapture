@@ -124,9 +124,7 @@ localparam clk_freq = 48_000_000; // 48MHz
 localparam baud = 115200;
 
 /* instantiate the rx1 module */
-reg rx1_ready;
 wire rxready;
-assign rxready = rx1_ready;
 wire [7:0] rx1_data;
 uart_rx #(clk_freq, baud) urx1 (
 	.clk(CAP_CLK),
@@ -137,19 +135,23 @@ uart_rx #(clk_freq, baud) urx1 (
 
 /* instantiate the tx1 module */
 reg tx1_start;
-reg tx1_busy;
 wire txbusy;
-assign txbusy = tx1_busy;
+wire tx1_data;
+reg tx_id;
+assign tx1_data = tx_id;
 uart_tx #(clk_freq, baud) utx1 (
 	.clk(CAP_CLK),
 	.tx_start(tx1_start),
-	.tx_data(cap2host),
+	.tx_data(TX_sel ? tx1_data : cap2host),
 	.tx(TX),
 	.tx_busy(txbusy)
 );	
 	
+
 // report id.
 reg [7:0] id [31:0];
+reg [4:0] id_cnt = 0;
+reg TX_sel = 0;// select between 0 Captured data to TX or 1 ID report to TX.
 
 initial begin
 	// Name report
@@ -203,206 +205,220 @@ initial begin
 	// End marking
 	id[31] <= 'h00;
 
-end	
+end
 	
+// main FSM.
+
+reg [1:0]main_fsm_cnt = 0;
+
+always@(posedge CAP_CLK)begin
+
+	case(main_fsm_cnt)
+	0: begin// Wait for RX
 	
-//  command decoder.
-always@(posedge CAP_CLK) begin 
+		if(rxready) begin
+			// copy data from UART to command buffer.
+			if(cmd_byte_n <= cmd_max) 
+				cmd_byte_n <= 0;
+			else
+				cmd_byte_n <= cmd_byte_n + 1;
+				
+			cmdbuf[cmd_byte_n] <= rx1_data;// store all 4 bytes into command buffer, auto-increment.
 
-if(rxready) begin
-	// copy data from UART to command buffer.
-	if(cmd_byte_n <= cmd_max) 
-		cmd_byte_n <= 0;
-	else
-		cmd_byte_n <= cmd_byte_n + 1;
-		
-	cmdbuf[cmd_byte_n] <= rx1_data;// store all 4 bytes into command buffer, auto-increment.
+			// command length 
+			case(cmdbuf[0])
+				// 1 byte command variants.
+				cmd_arm,
+				cmd_reset,
+				cmd_id:	cmd_max <= 0;
 
-	// command length 
-	case(cmdbuf[0])
-		// 1 byte command variants.
-		cmd_arm,
-		cmd_reset,
-		cmd_id:	cmd_max <= 0;
+				// 5 bytes command variants. 
+				cmd_setdiv,
+				cmd_settrigmask,
+				cmd_settrigsens: cmd_max <= 4;
+				
+				default: cmd_max <= 0;
+			endcase 
+			
+			if (cmd_byte_n == cmd_max) begin // received all 5 bytes, then decoder begins. 
 
-		// 5 bytes command variants. 
-		cmd_setdiv,
-		cmd_settrigmask,
-		cmd_settrigsens: cmd_max <= 4;
-		
-		default: cmd_max <= 0;
-	endcase 
-	
-	if (cmd_byte_n == cmd_max) begin // received all 5 bytes, then decoder begins. 
-
-		case(cmdbuf[0])
-				// Flag: Capture. Capture start immediately after this command is decoded.
-				// Format [0:cmd]
-				cmd_arm: begin
-					case(cap_div)
-						cap_48m: begin 
-							cap_limit <= 0;
-							cap_wr_ce <= 1;// enable mem write.
+				case(cmdbuf[0])
+						// Flag: Capture. Capture start immediately after this command is decoded.
+						// Format [0:cmd]
+						cmd_arm: begin
+							case(cap_div)
+								cap_48m,
+								cap_24m,
+								cap_12m,
+								cap_6m,
+								cap_2m: begin 
+									main_fsm_cnt <= 1; // move to Start Capture stage.
+									cap_wr_ce <= 1;// Enable Mem write.
+								end
+								default: begin
+									main_fsm_cnt <= main_fsm_cnt;
+									cap_wr_ce <= 0;// Not Enable Mem write.
+								end
+							endcase
 							
-							end
-						cap_24m: begin
-							cap_limit <= 1;
-							cap_wr_ce <= 1;// enable mem write.
+							case(cap_div)
+								cap_48m: begin 
+									cap_limit <= 0;
+									
+									end
+								cap_24m: begin
+									cap_limit <= 1;
+									
+									end
+								cap_12m: begin
+									cap_limit <= 2;
+									
+									end
+								cap_6m: begin 
+									cap_limit <= 4;
+									
+									end
+								cap_2m: begin 
+									cap_limit <= 12;
+									
+									end
+							endcase//cmd_div case 
 							
-							end
-						cap_12m: begin
-							cap_limit <= 2;
-							cap_wr_ce <= 1;// enable mem write.
+						end
 							
-							end
-						cap_6m: begin 
-							cap_limit <= 4;						
-							cap_wr_ce <= 1;// enable mem write.
+						cmd_id: begin // Report SUMP ID to OLS.
+							TX_sel <= 1;
+							main_fsm_cnt <= 4;
+						end
 							
-							end
-						cap_2m: begin 
-							cap_limit <= 12;
-							cap_wr_ce <= 1;// enable mem write.
-							
+						// Flag: Trigger mask setup, this will select which pin we want to be used as trigger
+						// Format [0:cmd][1:LSB][2:LWRMID][3:HGRMID][4:MSB] but we only care [1:LSB] since we only have 8 channel inputs
+						cmd_settrigmask: begin
+								trig_mask <= cmdbuf[1];
 							end
 						
-					endcase//cmd_div case 
-				end
+						// Flag: Trigger sensitivity setup, whether triggers when falling or rising edge.
+						// Format [0:cmd][1:LSB][2:LWRMID][3:HGRMID][4:MSB], again we only care [1:LSB] since we only have 8 channel inputs
+						cmd_settrigsens: begin
+								trig_sens <= cmdbuf[1];
+							end
+						
+						// Flag: set divider, this will select sample rate.
+						// Format [0:cmd][1:LSB][2:MID][3:MSB][4:IGNORED]
+						cmd_setdiv: begin
+								cap_div[7:0] <= cmdbuf[1];
+								cap_div[15:8] <= cmdbuf[2];
+								cap_div[23:16] <= cmdbuf[3];
+							end
 					
-				//cmd_id: // not implemented yet.
 					
-				// Flag: Trigger mask setup, this will select which pin we want to be used as trigger
-				// Format [0:cmd][1:LSB][2:LWRMID][3:HGRMID][4:MSB] but we only care [1:LSB] since we only have 8 channel inputs
-				cmd_settrigmask: begin
-						trig_mask <= cmdbuf[1];
-					end
-				
-				// Flag: Trigger sensitivity setup, whether triggers when falling or rising edge.
-				// Format [0:cmd][1:LSB][2:LWRMID][3:HGRMID][4:MSB], again we only care [1:LSB] since we only have 8 channel inputs
-				cmd_settrigsens: begin
-						trig_sens <= cmdbuf[1];
-					end
-				
-				// Flag: set divider, this will select sample rate.
-				// Format [0:cmd][1:LSB][2:MID][3:MSB][4:IGNORED]
-				cmd_setdiv: begin
-						cap_div[7:0] <= cmdbuf[1];
-						cap_div[15:8] <= cmdbuf[2];
-						cap_div[23:16] <= cmdbuf[3];
-					end
+				endcase
 			
-			
-		endcase
-	
-	end //if()
-	
-end
-
-end 
-
-
-// Always block for catured data TX 
-always@(posedge CAP_CLK) begin
-
-
-	/*
-	cap_limit value for each sample rate 
-	48MSa/s = 0
-	24MSa/s = 1
-	12MSa/s = 2
-	6MSa/s  = 4
-	2MSa/s  = 12
-	*/
-	cap_counter <= cap_counter + 1;
-	if(cap_counter == cap_limit) 
-		cap_counter <= 0;
-
-	if(cap_wr_addr == cap_size)// stop capturing on next clock cycle (when address counter reached the top of BRAM).
-		cap_wr_ce <= 0;
-	
-if(cap_wr_ce) begin// check start capture flag.
-
-	if(cap_limit == 0) begin // 48MSa/s running as System clock.
-
-		if(cap_wr_addr == cap_size) begin 
-			INT_flag <= 1;// Set interrupt flag
-			end
-		else 
-			cap_wr_addr <= cap_wr_addr + 1;
-
-	end
-	else begin// sample rate less than 48MSa/s capture depends on free-running counter.
-
-		if(cap_counter == 0) begin 
-				if(cap_wr_addr == cap_size) begin 
-					INT_flag <= 1;// Set interrupt flag
-					end
-				else 
-					cap_wr_addr <= cap_wr_addr + 1;
-					
-			/*case(cap_wr_addr)
-				cap_size: begin
-					INT_flag <= 1;
-					end
-				
-				default:
-					cap_wr_addr <= cap_wr_addr + 1;
-					
-			endcase*/
+			end // cmd decoder if 
+		
 		end
-
+	
 	end
 	
-end
-
-// End of capture 
-if(INT_flag) begin // at pos edge of INT_flag, LED turns on via "assign"
-
+	1: begin// Start Capture
 	
-	if(cap_rd_addr == cap_size) begin 
-		// TX stop after we send the last byte
-		INT_flag <= 0;
+		cap_counter <= cap_counter + 1;
+		if(cap_counter == cap_limit) 
+			cap_counter <= 0;
 
-	end 
-	else begin
-		// enable BRAM read back 
-		cap_rd_ce <= 1; 
+		if(cap_wr_addr == cap_size)begin// Capture done. move to TX stage.
+			cap_wr_ce <= 0;
+			main_fsm_cnt <= 2;
+		end
+		else begin// Still capturing. 
+		
+			if(cap_limit == 0) begin // 48MSa/s running as System clock.
+				cap_wr_addr <= cap_wr_addr + 1;
+			end
+			else begin// sample rate less than 48MSa/s capture depends on free-running counter.
+				if(cap_counter == 0) begin 
+					cap_wr_addr <= cap_wr_addr + 1;
+				end
+
+			end
+			
+		main_fsm_cnt <= main_fsm_cnt;
+		
+		end
+			
+	end
+	
+	2: begin// Start TX to host.
+		
+		INT_flag <= 1;
 		
 		if(txbusy)begin // if busy, just wait until transmit done.
 			tx1_start <= 0;
 		end
 		else begin // send data back to PC
 		
-			// finite state machine for BRAM read back.
-			case(bram_steps)
-			0:	begin// write address to ram
-				cap_rd_addr <= cap_rd_addr + 1;
-				bram_steps <= 1;// move to next step, wait
-				end
-			1: /*do nothing*/ bram_steps <= 2;
-			2: begin // read from ram and write to UART TX
-				//tx1_data <= cap2host;
-				tx1_start <= 1;
+			if(cap_rd_addr == cap_size) begin
+				cap_rd_ce <= 0;// diable BRAM read 
+				main_fsm_cnt <= 3;
+				INT_flag <= 0;
 				bram_steps <= 0;
-				end
-			endcase
+			end
+			else begin
+				
+				main_fsm_cnt <= main_fsm_cnt;
+				
+				// enable BRAM read back 
+				cap_rd_ce <= 1; 
+			
+				// finite state machine for BRAM read back.
+				case(bram_steps)
+				0:	begin// write address to ram
+					cap_rd_addr <= cap_rd_addr + 1;
+					bram_steps <= 1;// move to next step, wait
+					end
+				1: /*do nothing*/ bram_steps <= 2;
+				2: begin // read from ram and write to UART TX
+					//tx1_data <= cap2host;
+					tx1_start <= 1;
+					bram_steps <= 0;
+					end
+				endcase
+				
+			end
+		end//if(tx1_busy)
+	
+	end
+	
+	3: main_fsm_cnt <= 0;
+	
+	4:begin// Special stage, used for id command 
+	
+		if(txbusy)begin // if busy, just wait until transmit done.
+			tx1_start <= 0;
+		end
+		else begin // send data back to PC
+			id_cnt <= id_cnt + 1;
+			if(id_cnt == 31)begin
+				id_cnt <= 0;
+				main_fsm_cnt <= 0;
+				TX_sel <= 0;
+				tx1_start <= 0;
+			end
+			else begin
+				tx1_start <= 1;
+				tx_id <= id[id_cnt];
+				main_fsm_cnt <= main_fsm_cnt;
+			end
 			
 		end//if(tx1_busy)
 	
 	end
-		
-		
-end
-else begin
-	cap_rd_ce <= 0;
-	cap_rd_addr <= 0;
-end// if(INT_flag)
+	
+	endcase
 
-end// always block for tx
-
+end	
 
 endmodule
-
 /* report ID example 
 
 reg [7:0]id[32];
