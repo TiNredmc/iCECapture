@@ -76,6 +76,7 @@ reg cmd_max = 0;
 parameter cmd_arm = 8'h01;
 parameter cmd_reset = 8'h00;
 parameter cmd_id = 8'h02;
+parameter cmd_metadat = 8'h04;
 
 // 5 bytes cmd
 parameter cmd_settrigmask = 8'hc0;
@@ -84,15 +85,28 @@ parameter cmd_setdiv = 8'h80;
 
 reg [23:0]cap_div = 0;
 
-parameter cap_48m = 8'd3;
-parameter cap_24m = 8'd7;
-parameter cap_12m = 8'd15;
-parameter cap_6m = 8'd32;
-parameter cap_2m = 8'd99;
+// Dividers for each sample rate
+// Calculated with Div = (100,000,000 / Sample_rate) - 1 
+// Dividing by discard the decimal point. i.e. 1.9 = 1, 1.2 = 1
+// Sample_rate is in Hertz unit.
+
+// Mhz range
+parameter cap_48m = 8'd1;
+parameter cap_24m = 8'd3;
+parameter cap_12m = 8'd7;
+parameter cap_6m = 8'd15;
+parameter cap_4m = 8'd24;
+parameter cap_2m = 8'd49;
+parameter cap_1m = 8'd99;
+
+// kHz range
+parameter cap_500k = 8'd199;
+parameter cap_200k = 16'd499;
+parameter cap_100k = 16'd999;
 
 // capture counter limit for each sample rate.
-reg [3:0]cap_counter = 0;
-reg cap_limit = 0;
+reg [7:0]cap_counter = 0;
+reg [7:0]cap_limit = 0;
 
 // Trigger mask and sensitivity.
 // Trigger mask is to set which will be use as trigger.
@@ -148,68 +162,75 @@ uart_tx #(clk_freq, baud) utx1 (
 );	
 	
 
-// report id.
-reg [7:0] id [31:0];
+// metadat and id reports.
+reg [7:0] mdtd [31:0];
+reg [7:0] id [3:0];
 reg [4:0] id_cnt = 0;
 reg TX_sel = 0;// select between 0 Captured data to TX or 1 ID report to TX.
 
 initial begin
-	// Name report
-	id[0] <= 'h01;
-	// Name : iCECapture
-	id[1] <= 'h69;// i
-	id[2] <= 'h43;// C
-	id[3] <= 'h45;// E
-	id[4] <= 'h43;// C
-	id[5] <= 'h61;// a
-	id[6] <= 'h70;// p
-	id[7] <= 'h74;// t
-	id[8] <= 'h75;// u
-	id[9] <= 'h72;// r
-	id[10] <= 'h65;// e
+	// "1ALS" report
+	id[0] <= 'h31;// 1
+	id[1] <= 'h41;// A
+	id[2] <= 'h4C;// L
+	id[3] <= 'h53;// S
 	
-	id[11] <= 'h00;// end marker 
+	// Name report
+	mdtd[0] <= 'h01;
+	// Name : iCECapture
+	mdtd[1] <= 'h69;// i
+	mdtd[2] <= 'h43;// C
+	mdtd[3] <= 'h45;// E
+	mdtd[4] <= 'h43;// C
+	mdtd[5] <= 'h61;// a
+	mdtd[6] <= 'h70;// p
+	mdtd[7] <= 'h74;// t
+	mdtd[8] <= 'h75;// u
+	mdtd[9] <= 'h72;// r
+	mdtd[10] <= 'h65;// e
+	
+	mdtd[11] <= 'h00;// end marker 
 	
 	// Version report
-	id[12] <= 'h02;
+	mdtd[12] <= 'h02;
 	// Version : 0.1
-	id[13] <= 'h30;// 0
-	id[14] <= 'h2e;// .
-	id[15] <= 'h31;// 1
+	mdtd[13] <= 'h30;// 0
+	mdtd[14] <= 'h2e;// .
+	mdtd[15] <= 'h31;// 1
 	
-	id[16] <= 'h00;// end marker 
+	mdtd[16] <= 'h00;// end marker 
 	
 	// Sample memory depth (8KiB).
-	id[17] <= 'h21;
+	mdtd[17] <= 'h21;
 	// Sample mem depth (uint32_t) MSB first
-	id[18] <= 'h00;
-	id[19] <= 'h00;
-	id[20] <= 'h20;
-	id[21] <= 'h00;
+	mdtd[18] <= 'h00;
+	mdtd[19] <= 'h00;
+	mdtd[20] <= 'h20;
+	mdtd[21] <= 'h00;
 	
 	// Sample rate, Maximum is 48MSa/s.
-	id[22] <= 'h23;
-	id[23] <= 'h02;
-	id[24] <= 'hdc;
-	id[25] <= 'h6c;
-	id[26] <= 'h00;
+	mdtd[22] <= 'h23;
+	mdtd[23] <= 'h02;
+	mdtd[24] <= 'hdc;
+	mdtd[25] <= 'h6c;
+	mdtd[26] <= 'h00;
 	
 	// Input channel number report (8 channels)
-	id[27] <= 'h40;
-	id[28] <= 'd8;// we have 8 channels 
+	mdtd[27] <= 'h40;
+	mdtd[28] <= 'd8;// we have 8 channels 
 	
 	// Protocol version (2)
-	id[29] <= 'h41;
-	id[30] <= 'h02;
+	mdtd[29] <= 'h41;
+	mdtd[30] <= 'h02;
 	
 	// End marking
-	id[31] <= 'h00;
+	mdtd[31] <= 'h00;
 
 end
 	
 // main FSM.
 
-reg [1:0]main_fsm_cnt = 0;
+reg [2:0]main_fsm_cnt = 0;
 
 always@(posedge CAP_CLK)begin
 
@@ -278,17 +299,43 @@ always@(posedge CAP_CLK)begin
 									cap_limit <= 4;
 									
 									end
+								cap_4m: begin
+									cap_limit <= 6;
+									
+									end									
 								cap_2m: begin 
 									cap_limit <= 12;
+								
+									end
+								cap_1m: begin
+									cap_limit <= 24;
 									
 									end
+								cap_500k: begin
+									cap_limit <= 48;
+								
+									end
+								cap_200k: begin
+									cap_limit <= 120;
+									
+									end
+								cap_100k: begin
+									cap_limit <= 240;
+									
+									end
+									
 							endcase//cmd_div case 
 							
 						end
 							
-						cmd_id: begin // Report SUMP ID to OLS.
+						cmd_metadat: begin // Report SUMP Metadata to OLS.
 							TX_sel <= 1;
 							main_fsm_cnt <= 4;
+						end
+							
+						cmd_id: begin // OLS expect "1ALS" send over UART.
+							TX_sel <=1;
+							main_fsm_cnt <= 5;
 						end
 							
 						// Flag: Trigger mask setup, this will select which pin we want to be used as trigger
@@ -338,7 +385,10 @@ always@(posedge CAP_CLK)begin
 			else begin// sample rate less than 48MSa/s capture depends on free-running counter.
 				if(cap_counter == 0) begin 
 					cap_wr_addr <= cap_wr_addr + 1;
+					cap_wr_ce <= 1;
 				end
+				else
+					cap_wr_ce <= 0;
 
 			end
 			
@@ -391,7 +441,7 @@ always@(posedge CAP_CLK)begin
 	
 	3: main_fsm_cnt <= 0;
 	
-	4:begin// Special stage, used for id command 
+	4:begin// Special stage, used for metadata report. 
 	
 		if(txbusy)begin // if busy, just wait until transmit done.
 			tx1_start <= 0;
@@ -406,12 +456,34 @@ always@(posedge CAP_CLK)begin
 			end
 			else begin
 				tx1_start <= 1;
-				tx_id <= id[id_cnt];
+				tx_id <= mdtd[id_cnt];
 				main_fsm_cnt <= main_fsm_cnt;
 			end
 			
 		end//if(tx1_busy)
 	
+	end
+	
+	5:begin// Special stage, used for ID report "1ALS".
+	
+		if(txbusy)begin // if busy, just wait until transmit done.
+			tx1_start <= 0;
+		end
+		else begin // send data back to PC
+			id_cnt <= id_cnt + 1;
+			if(id_cnt == 3)begin
+				id_cnt <= 0;
+				main_fsm_cnt <= 0;
+				TX_sel <= 0;
+				tx1_start <= 0;
+			end
+			else begin
+				tx1_start <= 1;
+				tx_id <= id[id_cnt];
+				main_fsm_cnt <= main_fsm_cnt;
+			end
+			
+		end//if(tx1_busy)
 	end
 	
 	endcase
@@ -421,59 +493,59 @@ end
 endmodule
 /* report ID example 
 
-reg [7:0]id[32];
+reg [7:0]mdtd[31:0];
 
 initial begin
 	// Name report
-	id[0] <= 'h01;
+	mdtd[0] <= 'h01;
 	// Name : iCECapture
-	id[1] <= 'h69;// i
-	id[2] <= 'h43;// C
-	id[3] <= 'h45;// E
-	id[4] <= 'h43;// C
-	id[5] <= 'h61;// a
-	id[6] <= 'h70;// p
-	id[7] <= 'h74;// t
-	id[8] <= 'h75;// u
-	id[9] <= 'h72;// r
-	id[10] <= 'h65;// e
+	mdtd[1] <= 'h69;// i
+	mdtd[2] <= 'h43;// C
+	mdtd[3] <= 'h45;// E
+	mdtd[4] <= 'h43;// C
+	mdtd[5] <= 'h61;// a
+	mdtd[6] <= 'h70;// p
+	mdtd[7] <= 'h74;// t
+	mdtd[8] <= 'h75;// u
+	mdtd[9] <= 'h72;// r
+	mdtd[10] <= 'h65;// e
 	
-	id[11] <= 'h00;// end marker 
+	mdtd[11] <= 'h00;// end marker 
 	
 	// Version report
-	id[12] <= 'h02;
+	mdtd[12] <= 'h02;
 	// Version : 0.1
-	id[13] <= 'h30;// 0
-	id[14] <= 'h2e;// .
-	id[15] <= 'h31;// 1
+	mdtd[13] <= 'h30;// 0
+	mdtd[14] <= 'h2e;// .
+	mdtd[15] <= 'h31;// 1
 	
-	id[16] <= 'h00;// end marker 
+	mdtd[16] <= 'h00;// end marker 
 	
 	// Sample memory depth (8KiB).
-	id[17] <= 'h21;
+	mdtd[17] <= 'h21;
 	// Sample mem depth (uint32_t) MSB first
-	id[18] <= 'h00;
-	id[19] <= 'h00;
-	id[20] <= 'h20;
-	id[21] <= 'h00;
+	mdtd[18] <= 'h00;
+	mdtd[19] <= 'h00;
+	mdtd[20] <= 'h20;
+	mdtd[21] <= 'h00;
 	
 	// Sample rate, Maximum is 48MSa/s.
-	id[22] <= 'h23;
-	id[23] <= 'h02;
-	id[24] <= 'hdc;
-	id[25] <= 'h6c;
-	id[26] <= 'h00;
+	mdtd[22] <= 'h23;
+	mdtd[23] <= 'h02;
+	mdtd[24] <= 'hdc;
+	mdtd[25] <= 'h6c;
+	mdtd[26] <= 'h00;
 	
 	// Input channel number report (8 channels)
-	id[27] <= 'h40;
-	id[28] <= 'd8;// we have 8 channels 
+	mdtd[27] <= 'h40;
+	mdtd[28] <= 'd8;// we have 8 channels 
 	
 	// Protocol version (2)
-	id[29] <= 'h41;
-	id[30] <= 'h02;
+	mdtd[29] <= 'h41;
+	mdtd[30] <= 'h02;
 	
 	// End marking
-	id[31] <= 'h00;
+	mdtd[31] <= 'h00;
 
 end
 
