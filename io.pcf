@@ -16,5 +16,5 @@ set_io CAP[7] C2
 set_io TX	E1
 set_io RX	E2
 
-# Kind of ... Interrupt for host, but there's LED attach to it too, so active high xD.
-set_io INT0 F2
+# LED status, Always on when idle. Off when capturing data and transmitting it back to PC.
+set_io LED F2
