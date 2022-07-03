@@ -330,35 +330,35 @@ always@(posedge CAP_CLK)begin
                         
                         end
                     cap_12m: begin
-                        cap_limit <= 2;
+                        cap_limit <= 3;
                         
                         end
                     cap_6m: begin 
-                        cap_limit <= 4;
+                        cap_limit <= 7;
                         
                         end
                     cap_4m: begin
-                        cap_limit <= 6;
+                        cap_limit <= 11;
                         
                         end
                     cap_2m: begin 
-                        cap_limit <= 12;
+                        cap_limit <= 23;
                     
                         end
                     cap_1m: begin
-                        cap_limit <= 24;
+                        cap_limit <= 47;
                         
                         end
                     cap_500k: begin
-                        cap_limit <= 48;
+                        cap_limit <= 95;
                     
                         end
                     cap_200k: begin
-                        cap_limit <= 120;
+                        cap_limit <= 239;
                         
                         end
                     cap_100k: begin
-                        cap_limit <= 240;
+                        cap_limit <= 479;
                         
                         end
                         
@@ -532,8 +532,6 @@ always@(posedge CAP_CLK)begin
 		
 		endcase// cap limit
 
-//			
-//		main_fsm_cnt <= main_fsm_cnt;
 			
 	end
 	
